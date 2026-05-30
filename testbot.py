@@ -100,6 +100,7 @@ def update_setting(group_id, key, value):
     if c.fetchone():
         c.execute(f"UPDATE settings SET {key} = ? WHERE group_id = ?", (value, group_id))
     else:
+        # 默认初始化
         c.execute("INSERT INTO settings (group_id, operators, exchange_rate, fee_rate, is_active, language, timezone, show_usdt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                   (group_id, '[]', 7.2, 0, 0, 'chinese', 'Asia/Shanghai', 1))
         c.execute(f"UPDATE settings SET {key} = ? WHERE group_id = ?", (value, group_id))
@@ -229,16 +230,26 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         await query.message.reply_text(get_uid_tutorial_text(), parse_mode="HTML")
 
     elif query.data == "menu_help":
-        help_msg = "📌 <b>记账命令格式：</b>\n`+1000` 记入款\n`-500` 记支出\n`上课` 开启\n`下课` 汇总归档"
-        await query.message.reply_text(help_msg, parse_mode="Markdown")
+        help_msg = (
+            "📌 <b>智能记账指令速查：</b>\n\n"
+            "🟢 <code>上课</code> - 开启本群记账服务\n"
+            "🔴 <code>下课</code> - 关闭本群记账并打印本次财务清算报表\n"
+            "➕ <code>+1000 备注</code> - 记录一笔入款（例：+1000 灰产入款）\n"
+            "➖ <code>-500 备注</code> - 记录一笔下发/支出（例：-500 下发技术）\n"
+            "💹 <code>设置汇率 7.3</code> - 设定当前的常规换算汇率\n"
+            "📊 <code>查看账单</code> - 在不关盘下课的情况下，查看当前实时账目\n"
+            "👑 <code>设置操作人</code> - (需回复他人消息) 允许指定群团员帮忙记账"
+        )
+        await query.message.reply_text(help_msg, parse_mode="HTML")
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     chat_type = update.effective_chat.type
     gid = update.effective_chat.id
     uid = update.effective_user.id
-    username = update.effective_user.first_name
+    username = update.effective_user.first_name or "未知用户"
 
+    # ==================== 私聊管理逻辑 ====================
     if chat_type == "private":
         if context.user_data.get('waiting_for_master_id'):
             context.user_data['waiting_for_master_id'] = False 
@@ -268,11 +279,9 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 await update.message.reply_text("❌ 您输入的 UID 格式不正确。请重新点击按钮重试。")
             return
 
-        # 买家提交凭证：直接为管理员生成带“批准/拒绝”按钮的卡片！
+        # 买家提交付款凭证（长度大于等于20通常是哈希或钱包地址）
         if len(text) >= 20:
             masters = get_all_masters()
-            
-            # 创建审批内联按钮
             admin_keyboard = [
                 [
                     InlineKeyboardButton("✅ 确认到账（直接激活）", callback_data=f"admin_approve_{uid}"),
@@ -302,18 +311,104 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("💡 请使用下方的高级控制面板管理您的机器人：", reply_markup=get_private_main_keyboard(), parse_mode="HTML")
         return
 
-    # 群组内控制
+    # ==================== 群组独立记账核心逻辑 ====================
+    
+    # 1. 开关盘命令
     if text in ['上课', 'အတန်းစ']:
         if not can_use(gid, uid): return
         update_setting(gid, 'is_active', 1)
-        await update.message.reply_text("🟢 本群记账服务已开启！")
+        await update.message.reply_text("🟢 <b>本群智能记账服务已成功开启！</b>\n欢迎使用，请开始发送数据（例如：`+1000 备注`）。", parse_mode="HTML")
         return
 
     if text in ['下课', 'အတန်းဆင်း']:
         if not can_use(gid, uid): return
         if (get_setting(gid, 'is_active') or 0) == 0: return
+        
+        # 统计本场数据
+        conn = sqlite3.connect('bot_data.db')
+        c = conn.cursor()
+        c.execute("SELECT bill_type, amount, usdt_amount FROM bills WHERE group_id = ? AND is_settled = 0", (gid,))
+        rows = c.fetchall()
+        
+        total_in, total_out = 0, 0
+        total_in_u, total_out_u = 0, 0
+        
+        for r in rows:
+            b_type, amt, u_amt = r[0], r[1] or 0, r[2] or 0
+            if b_type == 'in':
+                total_in += amt
+                total_in_u += u_amt
+            elif b_type == 'out':
+                total_out += amt
+                total_out_u += u_amt
+                
+        # 封盘，将当前未结账单打上已结账标签
+        c.execute("UPDATE bills SET is_settled = 1 WHERE group_id = ? AND is_settled = 0", (gid,))
+        conn.commit()
+        conn.close()
+        
         update_setting(gid, 'is_active', 0)
-        await update.message.reply_text("🔴 下课成功！")
+        rate = get_setting(gid, 'exchange_rate') or 7.2
+        show_usdt = get_setting(gid, 'show_usdt')
+        
+        report = (
+            f"🔴 <b>【本场下课财务清算报表】</b>\n"
+            f"---------------------------------\n"
+            f"💹 结算汇率：<code>{rate}</code>\n"
+            f"📥 <b>总计入款：</b> <code>{total_in:,.2f}</code>\n"
+            f"📤 <b>总计支出：</b> <code>{total_out:,.2f}</code>\n"
+            f"⚖️ <b>本场结余：</b> <code>{(total_in - total_out):,.2f}</code>\n"
+        )
+        if show_usdt == 1:
+            report += (
+                f"---------------------------------\n"
+                f"💵 入款折 U：<code>{total_in_u:,.2f} USDT</code>\n"
+                f"💵 支出折 U：<code>{total_out_u:,.2f} USDT</code>\n"
+                f"💎 结余折 U：<code>{(total_in_u - total_out_u):,.2f} USDT</code>\n"
+            )
+        report += "---------------------------------\n🏁 本场账目数据已封盘归档归入网页后台。"
+        await update.message.reply_text(report, parse_mode="HTML")
+        return
+
+    # 2. 修改群配置参数 (必须在上课前或上课中均可，需为操作员/所有者)
+    if text.startswith('设置汇率'):
+        if not can_use(gid, uid): return
+        try:
+            val = float(text.replace('设置汇率', '').strip())
+            update_setting(gid, 'exchange_rate', val)
+            await update.message.reply_text(f"✅ 汇率已成功调整为：<code>{val}</code>", parse_mode="HTML")
+        except:
+            await update.message.reply_text("❌ 格式错误，请使用：`设置汇率 7.35`")
+        return
+
+    if text == '查看账单':
+        if not can_use(gid, uid): return
+        if (get_setting(gid, 'is_active') or 0) == 0: 
+            await update.message.reply_text("⚠️ 当前未盘点上课，无实时账单。")
+            return
+            
+        conn = sqlite3.connect('bot_data.db')
+        c = conn.cursor()
+        c.execute("SELECT bill_type, amount, usdt_amount FROM bills WHERE group_id = ? AND is_settled = 0", (gid,))
+        rows = c.fetchall()
+        conn.close()
+        
+        total_in, total_out = 0, 0
+        total_in_u, total_out_u = 0, 0
+        for r in rows:
+            if r[0] == 'in':
+                total_in += r[1]; total_in_u += r[2]
+            else:
+                total_out += r[1]; total_out_u += r[2]
+                
+        rate = get_setting(gid, 'exchange_rate') or 7.2
+        await update.message.reply_text(
+            f"📊 <b>实时账目看板 (未下课)</b>\n"
+            f"当前汇率: <code>{rate}</code>\n"
+            f"📥 当前总入款: <code>{total_in:,.2f}</code> ({total_in_u:,.2f} U)\n"
+            f"📤 当前总支出: <code>{total_out:,.2f}</code> ({total_out_u:,.2f} U)\n"
+            f"💎 净剩余结余: <code>{(total_in - total_out):,.2f}</code>", parse_mode="HTML"
+        )
         return
 
     if text.startswith('设置操作人'):
@@ -328,8 +423,45 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             if target_id not in ops:
                 ops.append(target_id)
                 update_setting(gid, 'operators', json.dumps(ops))
-                await update.message.reply_text("✅ 已成功为本群添加一名财务操作员。")
+                await update.message.reply_text(f"✅ 已成功将团员添加为本群财务操作员。")
         return
+
+    # 3. 核心流式自动记账：匹配 +/- 数字 备注
+    if (get_setting(gid, 'is_active') or 0) == 1: # 只有在上课状态下才记录数据
+        # 匹配以 + 或 - 开头的数字公式
+        match = re.match(r'^([+\-])\s*([\d.]+)\s*(.*)$', text)
+        if match:
+            if not can_use(gid, uid): return
+            
+            bill_sign = match.group(1)
+            raw_amount = float(match.group(2))
+            remark = match.group(3).strip() or "未分类流水"
+            
+            bill_type = 'in' if bill_sign == '+' else 'out'
+            rate = get_setting(gid, 'exchange_rate') or 7.2
+            usdt_calc = round(raw_amount / rate, 2)
+            
+            # 写入数据库
+            now_time = datetime.now(pytz.timezone('Asia/Shanghai')).strftime("%Y-%m-%d %H:%M:%S")
+            date_str = now_time.split(" ")[0]
+            
+            conn = sqlite3.connect('bot_data.db')
+            c = conn.cursor()
+            c.execute("INSERT INTO bills (group_id, user_id, username, remark, amount, usdt_amount, exchange_rate, bill_type, timestamp, date_str) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                      (gid, uid, username, remark, raw_amount, usdt_calc, rate, bill_type, now_time, date_str))
+            conn.commit()
+            conn.close()
+            
+            # 回显漂亮精简的记账小卡片
+            sign_word = "📥 录入成功 (入款)" if bill_type == 'in' else "📤 录入成功 (支出)"
+            echo_msg = (
+                f"<b>{sign_word}</b>\n"
+                f"▪️ <b>金额：</b> <code>{bill_sign}{raw_amount:,.2f}</code>\n"
+                f"▪️ <b>折合：</b> <code>{usdt_calc:,.2f} USDT</code> (汇率 {rate})\n"
+                f"▪️ <b>摘要：</b> {remark}\n"
+                f"✍️ <b>操作：</b> {username}"
+            )
+            await update.message.reply_text(echo_msg, parse_mode="HTML")
 
 # ========== 核心网关与启动器 ==========
 
