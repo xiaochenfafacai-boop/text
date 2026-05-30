@@ -21,9 +21,9 @@ PORT = int(os.environ.get('PORT', 8080))
 # 创始超级管理员（拥有最高解释权，无法被重置）
 FOUNDER_USERS = [8782394486]
 
-# 销售收款配置
+# 销售收款配置（已修改为 1 TRX）
 TRON_ADDRESS = "TVnjLwDrGjYVRTa1ukfoE2mFTmCxtrjoCw"
-MONTHLY_PRICE = "1 USDT"
+MONTHLY_PRICE = "1 TRX" 
 
 flask_app = Flask(__name__)
 
@@ -166,7 +166,7 @@ def get_renew_text():
 🌟 <b>特权包干：</b> 购买后，您名下在<b>【无数个群组】</b>拉入此机器人均可自动解锁，不受限制！
 
 📌 <b>自主转账对账流程：</b>
-1️⃣ 请向下方 <b>TRC-20</b> 官方收币地址转账：
+1️⃣ 请向下方 <b>TRX/波场</b> 官方收币地址转账：
 👉 <code>{TRON_ADDRESS}</code> <i>(点击可自动复制)</i>
 
 2️⃣ 转账成功后，请直接在当前私聊框中<b>回复发送您的钱包转账地址</b>或<b>交易哈希 (TxID)</b>。
@@ -223,7 +223,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         await query.message.reply_text(status_text, parse_mode="HTML")
 
     elif query.data == "menu_add_master":
-        # 鉴权：只有当前已经是VIP或者Master的买家，才有资格去裂变、添加新的机器人主人
         if not (is_master(uid) or is_vip_user(uid)):
             await query.message.reply_text("❌ 抱歉，您当前还没有购买本机器人，无权添加新的机器人主人。请先充值开通。")
             return
@@ -238,10 +237,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         await query.message.reply_text(get_uid_tutorial_text(), parse_mode="HTML")
 
     elif query.data == "menu_help":
-        # 引入重构的复用版指南
-        from main import get_help_text # 兼容老版普通语言文本
-        try: help_msg = get_help_text('chinese')
-        except: help_msg = "📌 <b>记账命令格式：</b>\n`+1000` 记入款\n`-500` 记支出\n`上课` 开启\n`下课` 汇总归档"
+        help_msg = "📌 <b>记账命令格式：</b>\n`+1000` 记入款\n`-500` 记支出\n`上课` 开启\n`下课` 汇总归档"
         await query.message.reply_text(help_msg, parse_mode="Markdown")
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -253,17 +249,13 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # 1. 私聊文本流处理
     if chat_type == "private":
-        # 检测是否正处于“等待输入新主人UID”的状态
         if context.user_data.get('waiting_for_master_id'):
-            context.user_data['waiting_for_master_id'] = False # 重置状态
-            
-            # 清洗提取字符串中的数字（防止买家带了空格或其他杂质）
+            context.user_data['waiting_for_master_id'] = False 
             clean_uid = "".join(filter(str.isdigit, text))
             
             if clean_uid and len(clean_uid) >= 5:
                 target_master_id = int(clean_uid)
                 
-                # 写入动态主人库
                 conn = sqlite3.connect('bot_data.db')
                 c = conn.cursor()
                 c.execute("INSERT OR REPLACE INTO dynamic_masters (user_id, username, added_by) VALUES (?, ?, ?)",
@@ -277,7 +269,6 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                     f"此新主人现在已获得最高特权，可在全新独立建立的任意群组中自由操控机器人、拥有全部管理指令权限！",
                     parse_mode="HTML"
                 )
-                # 尝试通知被添加的新主人
                 try:
                     await context.bot.send_message(
                         chat_id=target_master_id, 
@@ -288,7 +279,6 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 await update.message.reply_text("❌ 您输入的 UID 格式似乎不正确（UID 必须为全数字格式）。操作已取消，请重新点击按钮重试。")
             return
 
-        # 买家提交普通对账钱包地址（长度大于等于20通常为地址或哈希）
         if len(text) >= 20:
             masters = get_all_masters()
             notification = (
@@ -304,7 +294,6 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text("✅ 您的付款对账信息已成功递交！客服核对完毕后将立即全线激活您的多群使用权。")
             return
             
-        # 默认回执主菜单
         await update.message.reply_text("💡 请使用下方的高级控制面板管理您的机器人：", reply_markup=get_private_main_keyboard(), parse_mode="HTML")
         return
 
@@ -314,7 +303,6 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         parts = text.split()
         if len(parts) == 2 and parts[1].isdigit():
             target_uid = int(parts[1])
-            # 开通 30 天 VIP
             conn = sqlite3.connect('bot_data.db')
             c = conn.cursor()
             expire_date = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
@@ -332,7 +320,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             except: pass
         return
 
-    # 3. 群组内记账核心业务控制 (受 VIP 与操作员保护)
+    # 3. 群组内记账核心业务控制
     if text in ['上课', 'အတန်းစ']:
         if not can_use(gid, uid): return
         update_setting(gid, 'is_active', 1)
@@ -342,13 +330,11 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     if text in ['下课', 'အတန်းဆင်း']:
         if not can_use(gid, uid): return
         if (get_setting(gid, 'is_active') or 0) == 0: return
-        # 触发账单打印归档逻辑... (此处保留您原版的汇总打印代码)
         update_setting(gid, 'is_active', 0)
         await update.message.reply_text("🔴 下课成功！本轮账单已封存。")
         return
 
     if text.startswith('设置操作人'):
-        # 严格隔离：只有大主人（买家）有资格动态追加群内小副手操作员
         if not (is_master(uid) or is_vip_user(uid)):
             await update.message.reply_text("❌ 只有购买本机器人的VIP群主有权限添加群内财务操作员。")
             return
@@ -360,19 +346,13 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             if target_id not in ops:
                 ops.append(target_id)
                 update_setting(gid, 'operators', json.dumps(ops))
-                await update.message.reply_text("✅ 已成功为本群添加一名群内财务操作员（老方法设置成功）。")
+                await update.message.reply_text("✅ 已成功为本群添加一名群内财务操作员。")
         return
-
-    # 快捷记账格式逻辑 (+100, -200 等...) 
-    is_active = get_setting(gid, 'is_active') or 0
-    if is_active == 0 or not can_use(gid, uid): return
-    # (保留您原有的账目正则切分存储逻辑，运行平稳无改动)
 
 # ========== 核心网关与启动器 ==========
 
 def main():
     init_db()
-    # 异步开启 Flask 网页端
     threading.Thread(target=lambda: flask_app.run(host='0.0.0.0', port=PORT), daemon=True).start()
     
     app = Application.builder().token(TOKEN).build()
@@ -380,7 +360,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_callback_query))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
     
-    logging.info("🤖 智能多群分销版机器人已全线平稳升级启动...")
+    logging.info("🤖 智能多群分销版机器人已更新价格为 1 TRX 并成功启动...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
