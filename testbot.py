@@ -23,7 +23,7 @@ MASTER_USERS = [8782394486, 123456789, 987654321]
 
 # 销售收款配置
 TRON_ADDRESS = "TVnjLwDrGjYVRTa1ukfoE2mFTmCxtrjoCw"
-MONTHLY_PRICE = "80 USDT" # 已修改为 80 USDT
+MONTHLY_PRICE = "1 USDT" # 已修改为 80 USDT
 
 TIMEZONES = {
     'china': 'Asia/Shanghai',
