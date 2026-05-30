@@ -18,10 +18,10 @@ TOKEN = "8912954548:AAG-1rZVUabLEv9AOfJRQxGVax4ZiXWtC8g"
 WEB_URL = "https://sellb-6ugh.onrender.com"
 PORT = int(os.environ.get('PORT', 8080))
 
-# 创始超级管理员（拥有最高解释权，无法被重置）
+# 创始超级管理员（你自己的账户ID，用来接收审核通知和按钮）
 FOUNDER_USERS = [8782394486]
 
-# 销售收款配置（已修改为 1 TRX）
+# 销售收款配置
 TRON_ADDRESS = "TVnjLwDrGjYVRTa1ukfoE2mFTmCxtrjoCw"
 MONTHLY_PRICE = "1 TRX" 
 
@@ -31,47 +31,24 @@ flask_app = Flask(__name__)
 def init_db():
     conn = sqlite3.connect('bot_data.db')
     c = conn.cursor()
-    # 群组设置表
     c.execute('''CREATE TABLE IF NOT EXISTS settings
-                 (group_id INTEGER PRIMARY KEY,
-                  operators TEXT DEFAULT '[]',
-                  exchange_rate REAL DEFAULT 7.2,
-                  fee_rate REAL DEFAULT 0,
-                  is_active INTEGER DEFAULT 0,
-                  language TEXT DEFAULT 'chinese',
-                  timezone TEXT DEFAULT 'Asia/Shanghai',
-                  show_usdt INTEGER DEFAULT 1)''')
-    # 账单表
+                 (group_id INTEGER PRIMARY KEY, operators TEXT DEFAULT '[]', exchange_rate REAL DEFAULT 7.2,
+                  fee_rate REAL DEFAULT 0, is_active INTEGER DEFAULT 0, language TEXT DEFAULT 'chinese',
+                  timezone TEXT DEFAULT 'Asia/Shanghai', show_usdt INTEGER DEFAULT 1)''')
     c.execute('''CREATE TABLE IF NOT EXISTS bills
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  group_id INTEGER,
-                  user_id INTEGER,
-                  username TEXT,
-                  remark TEXT,
-                  amount REAL,
-                  usdt_amount REAL,
-                  exchange_rate REAL,
-                  bill_type TEXT,
-                  timestamp TEXT,
-                  date_str TEXT,
-                  is_settled INTEGER DEFAULT 0)''')
-    # 买家VIP授权表（多群无限使用权）
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER, user_id INTEGER, username TEXT,
+                  remark TEXT, amount REAL, usdt_amount REAL, exchange_rate REAL, bill_type TEXT,
+                  timestamp TEXT, date_str TEXT, is_settled INTEGER DEFAULT 0)''')
     c.execute('''CREATE TABLE IF NOT EXISTS vip_users
-                 (user_id INTEGER PRIMARY KEY,
-                  username TEXT,
-                  expire_time TEXT)''')
-    # 动态机器人主人表（动态扩展MASTER）
+                 (user_id INTEGER PRIMARY KEY, username TEXT, expire_time TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS dynamic_masters
-                 (user_id INTEGER PRIMARY KEY,
-                  username TEXT,
-                  added_by INTEGER)''')
+                 (user_id INTEGER PRIMARY KEY, username TEXT, added_by INTEGER)''')
     conn.commit()
     conn.close()
 
 # ========== 权限判定引擎 ==========
 
 def get_all_masters():
-    """获取包含创始人与买家自行添加的所有机器人主人列表"""
     masters = list(FOUNDER_USERS)
     try:
         conn = sqlite3.connect('bot_data.db')
@@ -80,18 +57,15 @@ def get_all_masters():
         rows = c.fetchall()
         conn.close()
         for row in rows:
-            if row[0] not in masters:
-                masters.append(row[0])
-    except Exception as e:
-        logging.error(f"读取主人列表失败: {e}")
+            if row[0] not in masters: masters.append(row[0])
+    except: pass
     return masters
 
 def is_master(user_id):
     return user_id in get_all_masters()
 
 def is_vip_user(user_id):
-    if is_master(user_id):
-        return True
+    if is_master(user_id): return True
     conn = sqlite3.connect('bot_data.db')
     c = conn.cursor()
     c.execute("SELECT expire_time FROM vip_users WHERE user_id = ?", (user_id,))
@@ -101,17 +75,13 @@ def is_vip_user(user_id):
         try:
             expire = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
             return datetime.now() < expire
-        except:
-            return False
+        except: return False
     return False
 
 def can_use(group_id, user_id):
-    if is_master(user_id) or is_vip_user(user_id):
-        return True
+    if is_master(user_id) or is_vip_user(user_id): return True
     ops = json.loads(get_setting(group_id, 'operators') or '[]')
     return user_id in ops
-
-# ========== 基础辅助函数 ==========
 
 def get_setting(group_id, key):
     conn = sqlite3.connect('bot_data.db')
@@ -136,24 +106,14 @@ def update_setting(group_id, key, value):
     conn.commit()
     conn.close()
 
-def get_current_time(timezone_str):
-    tz = pytz.timezone(timezone_str if timezone_str else 'Asia/Shanghai')
-    now = datetime.now(tz)
-    return now, now.strftime("%H:%M:%S"), now.strftime("%Y-%m-%d %H:%M:%S")
-
 # ========== 界面菜单设计 ==========
 
 def get_private_main_keyboard():
-    """私聊控制大厅键盘"""
     keyboard = [
-        [
-            InlineKeyboardButton("💰 充值续费方法", callback_data="menu_renew"),
-            InlineKeyboardButton("📅 检查到期时间", callback_data="menu_expire")
-        ],
-        [
-            InlineKeyboardButton("👑 添加新机器人主人", callback_data="menu_add_master"),
-            InlineKeyboardButton("📖 机器人使用指南", callback_data="menu_help")
-        ],
+        [InlineKeyboardButton("💰 充值续费方法", callback_data="menu_renew"),
+         InlineKeyboardButton("📅 检查到期时间", callback_data="menu_expire")],
+        [InlineKeyboardButton("👑 添加新机器人主人", callback_data="menu_add_master"),
+         InlineKeyboardButton("📖 机器人使用指南", callback_data="menu_help")],
         [InlineKeyboardButton("🌐 访问账单网页端", url=WEB_URL)]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -204,6 +164,38 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     uid = query.from_user.id
     await query.answer()
 
+    # --- 管理员点击“确认到账”或“拒绝”的逻辑 ---
+    if query.data.startswith("admin_approve_"):
+        target_uid = int(query.data.split("_")[2])
+        conn = sqlite3.connect('bot_data.db')
+        c = conn.cursor()
+        expire_date = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+        c.execute("INSERT OR REPLACE INTO vip_users (user_id, username, expire_time) VALUES (?, ?, ?)", 
+                  (target_uid, "包月买家", expire_date))
+        conn.commit()
+        conn.close()
+        
+        await query.message.edit_text(f"✅ <b>核对结果：已确认到账！</b>\n已成功为买家 (ID: <code>{target_uid}</code>) 激活多群独立记账白名单资格（30天）。", parse_mode="HTML")
+        try:
+            await context.bot.send_message(
+                chat_id=target_uid, 
+                text="🎉 <b>您的付款已核对成功！</b>\n系统已为您全面解锁多群无限制建群、无限记账 VIP 权限！如果您想把别人设为【机器人新主人】，请直接在私聊点击【👑 添加新机器人主人】按钮进行绑定。"
+            )
+        except: pass
+        return
+
+    elif query.data.startswith("admin_reject_"):
+        target_uid = int(query.data.split("_")[2])
+        await query.message.edit_text(f"❌ <b>核对结果：已拒绝开通。</b>\n已通知买家 (ID: <code>{target_uid}</code>) 账单未核对成功。", parse_mode="HTML")
+        try:
+            await context.bot.send_message(
+                chat_id=target_uid, 
+                text="⚠️ <b>通知：您的付款对账未通过审核。</b>\n请检查您发送的钱包地址/哈希是否正确，或联系官方客服人工核对。"
+            )
+        except: pass
+        return
+
+    # --- 买家控制大厅按钮 ---
     if query.data == "menu_renew":
         await query.message.reply_text(get_renew_text(), parse_mode="HTML")
         
@@ -229,7 +221,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             
         context.user_data['waiting_for_master_id'] = True
         await query.message.reply_text(
-            "📝 <b>请输入您想添加的【新机器人主人】的 UID（纯数字）或其用户名：</b>\n"
+            "📝 <b>请输入您想添加的【新机器人主人】的 UID（纯数字）：</b>\n"
             "--------------------------------------------\n"
             "💡 如果您不知道如何获取 UID，请查看下方教程👇",
             parse_mode="HTML"
@@ -247,7 +239,6 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     uid = update.effective_user.id
     username = update.effective_user.first_name
 
-    # 1. 私聊文本流处理
     if chat_type == "private":
         if context.user_data.get('waiting_for_master_id'):
             context.user_data['waiting_for_master_id'] = False 
@@ -264,9 +255,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 conn.close()
                 
                 await update.message.reply_text(
-                    f"🎉 <b>权限升级成功！</b>\n\n"
-                    f"🤝 已成功将 <code>{target_master_id}</code> 设置为全新的<b>机器人主人（Master）</b>！\n"
-                    f"此新主人现在已获得最高特权，可在全新独立建立的任意群组中自由操控机器人、拥有全部管理指令权限！",
+                    f"🎉 <b>权限升级成功！</b>\n\n🤝 已成功将 <code>{target_master_id}</code> 设置为全新的<b>机器人主人（Master）</b>！",
                     parse_mode="HTML"
                 )
                 try:
@@ -276,20 +265,36 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                     )
                 except: pass
             else:
-                await update.message.reply_text("❌ 您输入的 UID 格式似乎不正确（UID 必须为全数字格式）。操作已取消，请重新点击按钮重试。")
+                await update.message.reply_text("❌ 您输入的 UID 格式不正确。请重新点击按钮重试。")
             return
 
+        # 买家提交凭证：直接为管理员生成带“批准/拒绝”按钮的卡片！
         if len(text) >= 20:
             masters = get_all_masters()
+            
+            # 创建审批内联按钮
+            admin_keyboard = [
+                [
+                    InlineKeyboardButton("✅ 确认到账（直接激活）", callback_data=f"admin_approve_{uid}"),
+                    InlineKeyboardButton("❌ 拒绝（未收到款）", callback_data=f"admin_reject_{uid}")
+                ]
+            ]
+            
             notification = (
                 f"🔔 <b>买家提交付款对账通知</b>\n\n"
                 f"👤 买家: {username} (ID: <code>{uid}</code>)\n"
                 f"📝 提交的对账凭证/哈希地址:\n<code>{text}</code>\n\n"
-                f"💡 <b>如何一键开通？</b>\n请管理员核对后，复制以下指令并在机器人任意对话框回复发送：\n"
-                f"<code>/gopay {uid}</code>"
+                f"⚖️ <b>请核对您的钱包，并选择以下操作：</b>"
             )
+            
             for m_id in masters:
-                try: await context.bot.send_message(chat_id=m_id, text=notification, parse_mode="HTML")
+                try: 
+                    await context.bot.send_message(
+                        chat_id=m_id, 
+                        text=notification, 
+                        reply_markup=InlineKeyboardMarkup(admin_keyboard), 
+                        parse_mode="HTML"
+                    )
                 except: pass
             await update.message.reply_text("✅ 您的付款对账信息已成功递交！客服核对完毕后将立即全线激活您的多群使用权。")
             return
@@ -297,41 +302,18 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("💡 请使用下方的高级控制面板管理您的机器人：", reply_markup=get_private_main_keyboard(), parse_mode="HTML")
         return
 
-    # 2. 管理员一键开通高阶特权指令 (/gopay UID)
-    if text.startswith("/gopay"):
-        if not is_master(uid): return
-        parts = text.split()
-        if len(parts) == 2 and parts[1].isdigit():
-            target_uid = int(parts[1])
-            conn = sqlite3.connect('bot_data.db')
-            c = conn.cursor()
-            expire_date = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
-            c.execute("INSERT OR REPLACE INTO vip_users (user_id, username, expire_time) VALUES (?, ?, ?)", 
-                      (target_uid, "包月买家", expire_date))
-            conn.commit()
-            conn.close()
-            
-            await update.message.reply_text(f"🎉 成功为买家 [UID: {target_uid}] 激活多群独立记账白名单特权（30天）！")
-            try:
-                await context.bot.send_message(
-                    chat_id=target_uid, 
-                    text="🎉 您的付款已核对成功！系统已为您全面解锁多群无限制建群、无限记账 VIP 权限！请前往群组开始体验吧！"
-                )
-            except: pass
-        return
-
-    # 3. 群组内记账核心业务控制
+    # 群组内控制
     if text in ['上课', 'အတန်းစ']:
         if not can_use(gid, uid): return
         update_setting(gid, 'is_active', 1)
-        await update.message.reply_text("🟢 本群记账服务已开启！请开始发送账目数据。")
+        await update.message.reply_text("🟢 本群记账服务已开启！")
         return
 
     if text in ['下课', 'အတန်းဆင်း']:
         if not can_use(gid, uid): return
         if (get_setting(gid, 'is_active') or 0) == 0: return
         update_setting(gid, 'is_active', 0)
-        await update.message.reply_text("🔴 下课成功！本轮账单已封存。")
+        await update.message.reply_text("🔴 下课成功！")
         return
 
     if text.startswith('设置操作人'):
@@ -346,7 +328,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             if target_id not in ops:
                 ops.append(target_id)
                 update_setting(gid, 'operators', json.dumps(ops))
-                await update.message.reply_text("✅ 已成功为本群添加一名群内财务操作员。")
+                await update.message.reply_text("✅ 已成功为本群添加一名财务操作员。")
         return
 
 # ========== 核心网关与启动器 ==========
@@ -354,13 +336,10 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 def main():
     init_db()
     threading.Thread(target=lambda: flask_app.run(host='0.0.0.0', port=PORT), daemon=True).start()
-    
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CallbackQueryHandler(handle_callback_query))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
-    
-    logging.info("🤖 智能多群分销版机器人已更新价格为 1 TRX 并成功启动...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
