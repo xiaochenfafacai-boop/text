@@ -14,8 +14,8 @@ import os
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 # ==================== 核心配置 ====================
-TOKEN = "8912954548:AAG-1rZVUabLEv9AOfJRQxGVax4ZiXWtC8g"
-WEB_URL = "https://sellb-6ugh.onrender.com"
+TOKEN = "8968642261:AAG0QHmD-5nhR-9dyZEnJGIz-p4rpO61cMc"
+WEB_URL = "https://sellb-7tgh.onrender.com"
 PORT = int(os.environ.get('PORT', 8080))
 
 # 创始超级管理员账户ID（接收买家审核通知和开通按钮）
